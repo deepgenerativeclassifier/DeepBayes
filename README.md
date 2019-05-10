@@ -103,11 +103,13 @@ However we don't expect the logit/marginal detection to work well on discriminat
 
 ## The WB+S+(M/L/K) attacks: "superwhite"
 
-We also include the implementation of the white-box attack targeting randomness and detection. See [test_attack/superwhite.py](test_attack/superwhite.py) for details.
+We also include the implementation of the white-box attack targeting randomness and detection. See [test_attack/superwhite.py](https://github.com/deepgenerativeclassifier/DeepBayes/blob/master/test_attacks/superwhite.py) for details.
 
 To test this attack, after training your model, simply run e.g.
 
     python attack_superwhite.py --victim bayes_K10_F --eps 0.2 --data mnist --lbd 0.1 --save --snapshot
+
+This will perform WB+S+L attack (against randomness + logit detection). To perform attacks agains marginal or KL detection, change the detection loss [here](https://github.com/deepgenerativeclassifier/DeepBayes/blob/master/test_attacks/superwhite.py#L213) in [test_attack/superwhite.py](https://github.com/deepgenerativeclassifier/DeepBayes/blob/master/test_attacks/superwhite.py).
 
 Here, the extra configs are (others are the same as for attack.py):
 
