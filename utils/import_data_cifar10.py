@@ -15,7 +15,7 @@ def load_data_cifar10(path, labels = None, conv = True, seed = 0):
     # load and split data
     def unpickle(path, name):
         f = open(path + 'cifar-10-batches-py/' + name,'rb')
-        data = pickle.load(f)
+        data = pickle.load(f, encoding='latin1')
         f.close()
         return data
     def futz(X):

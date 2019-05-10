@@ -7,7 +7,7 @@ PATH = '../'
 sys.path.extend([PATH+'alg/', PATH+'models/', PATH+'utils/'])
 
 class BayesModel:
-    def __init__(self, sess, data_name, vae_type, conv=True, K=1, checkpoint=0, 
+    def __init__(self, sess, data_name, vae_type, fea_layer, conv=True, K=1, checkpoint=0, 
                  attack_snapshot=False, use_mean=False, fix_samples=False, no_z=False,
                  dimZ=None):
         if data_name == 'mnist':
@@ -37,12 +37,14 @@ class BayesModel:
             no_z = False
 
         print('settings:')
+        print('feature layer', fea_layer)
         print('no_z', no_z)
         print('use_mean', use_mean)
         print('fix_samples', fix_samples)
         print('attack_snapshot', attack_snapshot)
 
-        cla, test_ll, enc, dec = load_bayes_classifier(sess, data_name, vae_type, K, checkpoint, 
+        cla, test_ll, enc, dec, fea_op = load_bayes_classifier(sess, data_name, vae_type, fea_layer, 
+                                                       K, checkpoint, 
                                                        conv=conv, attack_snapshot=attack_snapshot, 
                                                        use_mean=use_mean, fix_samples=fix_samples, 
                                                        no_z=no_z, dimZ=dimZ)
@@ -50,6 +52,7 @@ class BayesModel:
         self.eval_test_ll = test_ll
         self.enc = enc
         self.dec = dec
+        self.fea_op = fea_op
         self.use_mean = use_mean
         self.attack_snapshot = attack_snapshot
         self.fix_samples = fix_samples
@@ -90,11 +93,12 @@ def logsumexp(x):
     return tmp + x_max
 
 def bayes_classifier(x, enc, dec, ll, dimY, dimZ, lowerbound, K = 1, beta=1.0, use_mean=False,
-                     fix_samples=False, snapshot=False, seed=0, no_z=False, softmax=False):
+                     fix_samples=False, snapshot=False, seed=0, no_z=False, softmax=False, N=None):
     if use_mean: K=1
     enc_conv, enc_mlp = enc
     fea = enc_conv(x)
-    N = x.get_shape().as_list()[0]
+    if N is None:
+        N = x.get_shape().as_list()[0]
     logpxy = []
     if no_z:
         z_holder = tf.zeros([N, dimZ])
@@ -118,7 +122,7 @@ def bayes_classifier(x, enc, dec, ll, dimY, dimZ, lowerbound, K = 1, beta=1.0, u
     else:
         return logpxy
 
-def load_bayes_classifier(sess, data_name, vae_type, K, checkpoint=0, conv=True, 
+def load_bayes_classifier(sess, data_name, vae_type, fea_layer, K, checkpoint=0, conv=True, 
                           attack_snapshot=False, use_mean=False, fix_samples=False, no_z=False,
                           dimZ=None):
     if data_name == 'mnist':
@@ -133,57 +137,56 @@ def load_bayes_classifier(sess, data_name, vae_type, K, checkpoint=0, conv=True,
         dimY = 2
 
     # then define model
-    if data_name == 'mnist':
+    # note that this is only for cifar10
+    if data_name in ['cifar10']:
         if vae_type == 'A':
-            from conv_generator_mnist_A import generator
+            from mlp_generator_cifar10_A import generator
         if vae_type == 'B':
-            from conv_generator_mnist_B import generator
+            from mlp_generator_cifar10_B import generator
         if vae_type == 'C':
-            from conv_generator_mnist_C import generator
+            from mlp_generator_cifar10_C import generator
         if vae_type == 'D':
-            from conv_generator_mnist_D import generator
+            from mlp_generator_cifar10_D import generator
         if vae_type == 'E':
-            from conv_generator_mnist_E import generator
+            from mlp_generator_cifar10_E import generator
         if vae_type == 'F':
-            from conv_generator_mnist_F import generator
+            from mlp_generator_cifar10_F import generator
         if vae_type == 'G':
-            from conv_generator_mnist_G import generator
-        from conv_encoder_mnist import encoder_gaussian as encoder
-        n_channel = 64
-        dimH = 500
-        if dimZ is None:
-            dimZ = 64
-        ll = 'l2'
-        beta = 1.0
-    if data_name in ['cifar10', 'svhn', 'plane_frog']:
-        if vae_type == 'A':
-            from conv_generator_cifar10_A import generator
-        if vae_type == 'B':
-            from conv_generator_cifar10_B import generator
-        if vae_type == 'C':
-            from conv_generator_cifar10_C import generator
-        if vae_type == 'D':
-            from conv_generator_cifar10_D import generator
-        if vae_type == 'E':
-            from conv_generator_cifar10_E import generator
-        if vae_type == 'F':
-            from conv_generator_cifar10_F import generator
-        if vae_type == 'G':
-            from conv_generator_cifar10_G import generator
-        from conv_encoder_cifar10 import encoder_gaussian as encoder
-        n_channel = 64
+            from mlp_generator_cifar10_G import generator
+        from mlp_encoder_cifar10 import encoder_gaussian as encoder
         dimH = 1000
         if dimZ is None:
             dimZ = 128
-        if data_name == 'plane_frog':
-            ll = 'l2'
-            beta = 1.0
-        else:
-            ll = 'l1'
-            beta = 1.0
+        ll = 'l2'
+        beta = 1.0
 
-    dec = generator(input_shape, dimH, dimZ, dimY, n_channel, 'sigmoid', 'gen')
-    enc, enc_conv, enc_mlp = encoder(input_shape, dimH, dimZ, dimY, n_channel, 'enc')
+    # first build the feature extractor
+    from vgg_cifar10 import cifar10vgg
+    path = 'load/vgg_model/'
+    cnn = cifar10vgg(path, train=False)
+    if fea_layer == 'low':
+        N_layer = 16
+    if fea_layer == 'mid':
+        N_layer = 36
+    if fea_layer == 'high':
+        N_layer = len(cnn.model.layers) - 5
+    def feature_extractor(x):
+        out = cnn.normalize_production(x * 255.0)
+        for i in range(N_layer):
+            out = cnn.model.layers[i](out)
+        if len(out.get_shape().as_list()) == 4:
+            out = tf.reshape(out, [x.get_shape().as_list()[0], -1])
+        return out
+    
+    X_ph = tf.placeholder(tf.float32, shape=(1,)+input_shape)
+    fea_op = feature_extractor(X_ph)
+    if len(fea_op.get_shape().as_list()) == 4:
+        fea_op = tf.reshape(fea_op, [1, -1])
+    dimF = fea_op.get_shape().as_list()[-1]
+    dec = generator(dimF, dimH, dimZ, dimY, 'linear', 'gen')
+    n_layers_enc = 2
+    enc = encoder(dimF, dimH, dimZ, dimY, n_layers_enc, 'enc')
+    del X_ph; del fea_op;
     
     if vae_type == 'A':
         from lowerbound_functions import lowerbound_A as bound_func
@@ -201,54 +204,74 @@ def load_bayes_classifier(sess, data_name, vae_type, K, checkpoint=0, conv=True,
         from lowerbound_functions import lowerbound_G as bound_func
 
     # load params   
-    path_name = data_name + '_conv_vae_%s' % vae_type
-    path_name = path_name + '_%d' % dimZ
+    path_name = data_name + '_conv_vae_fea_%s_%s' % (vae_type, fea_layer)
+    if data_name == 'mnist' and dimZ != 64:
+        path_name = path_name + '_%d' % dimZ
     path_name += '/'
-    print(PATH+'save/'+path_name)
     assert os.path.isdir(PATH+'save/'+path_name)
     filename = PATH + 'save/' + path_name + 'checkpoint'
     assert checkpoint >= 0
-    load_params(sess, filename, checkpoint)
+    filename = filename + '_' + str(checkpoint)
+    load_params(sess, filename)
+
+    import keras.backend
+    keras.backend.set_session(sess)
+    cnnfile = 'load/vgg_model/cifar10vgg.h5'
+    cnn.model.load_weights(cnnfile)
+    print('load weight from', cnnfile)
+
+    # reference names
+    enc_conv = lambda x: x
+    enc_mlp = enc
 
     def comp_test_ll(x, y, K):
-        fea = enc_conv(x)
-        bound = lowerbound(x, fea, y, enc_mlp, dec, ll, K, IS=True, beta=beta, use_mean=use_mean)
+        fea = feature_extractor(x)
+        bound = lowerbound(fea, fea, y, enc_mlp, dec, ll, K, IS=True, beta=beta, use_mean=use_mean)
         return tf.reduce_mean(bound)
     
     def classifier(x):
-        return bayes_classifier(x, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta)
+        N = x.get_shape().as_list()[0]
+        fea = feature_extractor(x)
+        return bayes_classifier(fea, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta, N = N)
         
     def classifier_snapshot(x):
-        return bayes_classifier(x, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta, snapshot=True)
+        N = x.get_shape().as_list()[0]
+        fea = feature_extractor(x)
+        return bayes_classifier(fea, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta, snapshot=True, N = N)
     
     def classifier_use_mean(x):
-        return bayes_classifier(x, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, 1, beta, use_mean=True)
+        N = x.get_shape().as_list()[0]
+        fea = feature_extractor(x)
+        return bayes_classifier(fea, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, 1, beta, use_mean=True, N = N)
     
     def classifier_fix_samples(x):
-        return bayes_classifier(x, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta, fix_samples=True)
+        N = x.get_shape().as_list()[0]
+        fea = feature_extractor(x)
+        return bayes_classifier(fea, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K, beta, fix_samples=True, N = N)
 
     def classifier_no_z(x):
-        return bayes_classifier(x, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K=1, beta=beta, no_z=True)
+        N = x.get_shape().as_list()[0]
+        fea = feature_extractor(x)
+        return bayes_classifier(fea, [enc_conv, enc_mlp], dec, ll, dimY, dimZ, bound_func, K=1, beta=beta, no_z=True, N = N)
 
     if attack_snapshot:
         print("use %d samples, and attack each of them" % K)
-        return classifier_snapshot, comp_test_ll, [enc_conv, enc_mlp], dec
+        return classifier_snapshot, comp_test_ll, [enc_conv, enc_mlp], dec, feature_extractor
     elif use_mean:
         print("use mean from encoder q")
-        return classifier_use_mean, comp_test_ll, [enc_conv, enc_mlp], dec
+        return classifier_use_mean, comp_test_ll, [enc_conv, enc_mlp], dec, feature_extractor
     elif fix_samples:
         print("using %d samples (fixed randomness)" % K)
-        return classifier_fix_samples, comp_test_ll, [enc_conv, enc_mlp], dec
+        return classifier_fix_samples, comp_test_ll, [enc_conv, enc_mlp], dec, feature_extractor
     elif no_z:
         print("don't use z (i.e. set z = 0)")
-        return classifier_no_z, comp_test_ll, [enc_conv, enc_mlp], dec
+        return classifier_no_z, comp_test_ll, [enc_conv, enc_mlp], dec, feature_extractor
     else:
         print("use %d samples" % K)
-        return classifier, comp_test_ll, [enc_conv, enc_mlp], dec
+        return classifier, comp_test_ll, [enc_conv, enc_mlp], dec, feature_extractor
 
-def load_params(sess, filename, checkpoint):
+def load_params(sess, filename):
     params = tf.trainable_variables()
-    filename = filename + '_' + str(checkpoint)
     f = open(filename + '.pkl', 'rb')
     import pickle
     param_dict = pickle.load(f)

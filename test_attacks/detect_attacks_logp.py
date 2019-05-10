@@ -86,7 +86,6 @@ def test_attacks(batch_size, conv, guard_name, targeted, attack_method, victim_n
     print("Created TensorFlow session.")
 
     # Get MNIST test data
-    nb_classes = 10
     use_data = True
     if use_data:
         if data_name == 'mnist':
@@ -96,6 +95,15 @@ def test_attacks(batch_size, conv, guard_name, targeted, attack_method, victim_n
                                                       train_end=60000,
                                                       test_start=0,
                                                       test_end=10000)
+        if data_name in ['cifar10', 'plane_frog']:
+            img_rows, img_cols, channels = 32, 32, 3
+            from import_data_cifar10 import load_data_cifar10
+            labels = None
+            if data_name == 'plane_frog':
+                labels = [0, 6]
+            datapath = '../cifar_data/'
+            x_train, x_clean, y_train, y_clean = load_data_cifar10(datapath, labels=labels)                        
+    nb_classes = y_train.shape[1]
 
     # Define input TF placeholder
     x = tf.placeholder(tf.float32, shape=(batch_size, img_rows, img_cols, channels))
@@ -118,6 +126,23 @@ def test_attacks(batch_size, conv, guard_name, targeted, attack_method, victim_n
         filename = filename + '_untargeted'
     filename = path + filename + '.pkl'
     x_adv, _, y_clean, adv_logits = pickle.load(open(filename, 'rb'))
+
+    # for cifar-binary, need to extract test data that all the classifiers agree on
+    if data_name == 'plane_frog':
+        load_path = 'data_ind/'
+        ind = range(x_clean.shape[0])
+        classifiers = ['bayes_K10_A_cnn', 'bayes_K10_B_cnn', 'bayes_K10_C_cnn',
+                      'bayes_K10_D_cnn', 'bayes_K10_E_cnn', 'bayes_K10_F_cnn', 
+                      'bayes_K10_G_cnn']#, 'bnn_K10']
+        for c in classifiers:
+            filename = load_path + data_name + '_' + c + '.pkl'
+            tmp = pickle.load(open(filename, 'rb'))
+            ind = list(set(ind) & set(tmp))
+        print('crafting adversarial examples only on correctly prediced images...')
+        print('%d / %d in total' % (len(ind), x_clean.shape[0]))
+        x_clean = x_clean[ind]; y_clean = y_clean[ind]
+        print(len(ind), x_adv.shape, adv_logits.shape)
+        x_adv = x_adv[ind]; adv_logits = adv_logits[ind]
     print("data loaded from %s, %d samples in total" % (filename, x_adv.shape[0]))
     print(x_clean.shape, x_adv.shape)
 
